@@ -2,7 +2,7 @@
 import { useState, useEffect } from "react";
 import { Button } from "@/components/ui/button";
 import { Plus, CreditCard } from "lucide-react";
-import PaymentMethodCard from "@/components/billing/PaymentMethodCard";
+import PaymentMethodCard from "@/components/settings/Card";
 import PaymentMethodDialog from "@/components/settings/PaymentMethodDialog";
 import SubscriptionConfirmDialog from "@/components/settings/SubscriptionConfirmDialog";
 import PayAsYouGoDialog from "@/components/settings/PayAsYouGoDialog";
