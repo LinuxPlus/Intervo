@@ -86,7 +86,7 @@ services:
       - S3_BUCKET_NAME=intervo-rag
       - S3_ACCESS_KEY=intervoadmin
       - S3_SECRET_KEY=intervoadmin123
-      - S3_ENDPOINT_URL=http://minio:9008
+      - S3_ENDPOINT_URL=http://10.10.0.46:9008
       - S3_USE_SSL=false
     command: sh -c "pip install --no-cache-dir -r ../requirements.txt && python api.py"
     networks:
