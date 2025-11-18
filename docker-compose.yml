@@ -56,8 +56,8 @@ services:
     image: minio/minio:latest
     container_name: intervo-minio
     ports:
-      - "9000:9000"   # S3 API
-      - "9001:9001"   # MinIO Console
+      - "9008:9000"   # S3 API
+      - "9007:9001"   # MinIO Console
     environment:
       - MINIO_ROOT_USER=intervoadmin
       - MINIO_ROOT_PASSWORD=intervoadmin123
