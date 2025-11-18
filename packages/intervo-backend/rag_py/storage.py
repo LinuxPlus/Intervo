@@ -2,14 +2,13 @@ import os
 import json
 import boto3
 from datetime import datetime
-from typing import List, Dict, Any, Optional, BinaryIO
+from typing import List, Dict, Any, Optional
 from enum import Enum
 from botocore.config import Config
 from fastapi import UploadFile, HTTPException
 import logging
 from dotenv import load_dotenv
 from pathlib import Path
-import botocore
 import io
 
 # Load environment variables - try production first, then development, then default .env
@@ -33,51 +32,108 @@ else:
 
 logger = logging.getLogger(__name__)
 
+
 class DocumentType(str, Enum):
     FILES = "files"
     TEXT = "text"
     QA = "qa"
     CRAWLED = "crawled"
 
+
 class S3Storage:
     def __init__(self):
-        self.bucket = os.getenv("STORAGE_S3_BUCKET")
-        if not self.bucket:
-            raise ValueError("STORAGE_S3_BUCKET environment variable is not set")
+        """
+        S3/MinIO-compatible storage.
 
-        # Configure with explicit signature version and addressing style
-        config = Config(
-            max_pool_connections=int(os.getenv("STORAGE_S3_MAX_SOCKETS", 200)),
-            s3={'addressing_style': 'path'},
-            signature_version='s3v4',
-            retries = {'max_attempts': 3, 'mode': 'standard'}  # Add retries
+        پشتیبانی از دو مدل نام‌گذاری env:
+        - مدل قدیمی پروژه: STORAGE_S3_BUCKET, STORAGE_S3_ENDPOINT, STORAGE_S3_REGION,
+          S3_PROTOCOL_ACCESS_KEY_ID, S3_PROTOCOL_ACCESS_KEY_SECRET, STORAGE_S3_MAX_SOCKETS
+        - مدل جدیدی که در docker-compose گذاشتیم: S3_BUCKET_NAME, S3_ENDPOINT_URL,
+          S3_REGION, S3_ACCESS_KEY, S3_SECRET_KEY, S3_USE_SSL
+        """
+
+        # --- Bucket name ---
+        self.bucket = (
+            os.getenv("STORAGE_S3_BUCKET")
+            or os.getenv("S3_BUCKET_NAME")
+        )
+        if not self.bucket:
+            raise ValueError(
+                "S3 bucket is not configured. "
+                "Set STORAGE_S3_BUCKET or S3_BUCKET_NAME environment variable."
+            )
+
+        # --- Region ---
+        self.region = (
+            os.getenv("STORAGE_S3_REGION")
+            or os.getenv("S3_REGION")
+            or "us-east-1"
         )
 
-        endpoint = os.getenv("STORAGE_S3_ENDPOINT")
-        if not endpoint:
-            raise ValueError("STORAGE_S3_ENDPOINT environment variable is not set")
+        # --- Endpoint (MinIO / S3-compatible) ---
+        self.endpoint = (
+            os.getenv("STORAGE_S3_ENDPOINT")
+            or os.getenv("S3_ENDPOINT_URL")
+        )
+        if not self.endpoint:
+            raise ValueError(
+                "S3 endpoint is not configured. "
+                "Set STORAGE_S3_ENDPOINT or S3_ENDPOINT_URL environment variable "
+                "(e.g. http://minio:9000)."
+            )
 
+        # --- Credentials ---
+        self.access_key = (
+            os.getenv("S3_PROTOCOL_ACCESS_KEY_ID")
+            or os.getenv("S3_ACCESS_KEY")
+            or os.getenv("AWS_ACCESS_KEY_ID")
+        )
+        self.secret_key = (
+            os.getenv("S3_PROTOCOL_ACCESS_KEY_SECRET")
+            or os.getenv("S3_SECRET_KEY")
+            or os.getenv("AWS_SECRET_ACCESS_KEY")
+        )
+
+        if not self.access_key or not self.secret_key:
+            raise ValueError(
+                "S3 credentials are not configured. "
+                "Set S3_PROTOCOL_ACCESS_KEY_ID/S3_PROTOCOL_ACCESS_KEY_SECRET "
+                "or S3_ACCESS_KEY/S3_SECRET_KEY (or AWS_ACCESS_KEY_ID/AWS_SECRET_ACCESS_KEY)."
+            )
+
+        # --- Max sockets / retries config ---
+        max_sockets = int(os.getenv("STORAGE_S3_MAX_SOCKETS", "200"))
+        use_ssl = os.getenv("S3_USE_SSL", "false").lower() == "true"
+
+        config = Config(
+            max_pool_connections=max_sockets,
+            s3={'addressing_style': 'path'},
+            signature_version='s3v4',
+            retries={'max_attempts': 3, 'mode': 'standard'},
+            region_name=self.region,
+        )
+
+        # Create S3/MinIO client
         self.s3_client = boto3.client(
             's3',
-            endpoint_url=endpoint,
-            aws_access_key_id=os.getenv("S3_PROTOCOL_ACCESS_KEY_ID"),
-            aws_secret_access_key=os.getenv("S3_PROTOCOL_ACCESS_KEY_SECRET"),
-            region_name=os.getenv("STORAGE_S3_REGION"),
-            config=config
+            endpoint_url=self.endpoint,
+            aws_access_key_id=self.access_key,
+            aws_secret_access_key=self.secret_key,
+            region_name=self.region,
+            use_ssl=use_ssl,
+            config=config,
         )
 
         # Print configuration for debugging
-        logger.info(f"S3 Configuration:")
-        logger.info(f"Endpoint: {endpoint}")
-        logger.info(f"Region: {os.getenv('STORAGE_S3_REGION')}")
+        logger.info("S3 Configuration:")
+        logger.info(f"Endpoint: {self.endpoint}")
+        logger.info(f"Region: {self.region}")
         logger.info(f"Bucket: {self.bucket}")
+        logger.info(f"Use SSL: {use_ssl}")
 
-        # First try to create the bucket if it doesn't exist
+        # Try to create the bucket if it doesn't exist (works fine with MinIO)
         try:
-            self.s3_client.create_bucket(
-                Bucket=self.bucket,
-                # CreateBucketConfiguration={'LocationConstraint': 'hel1'} #  Hetzner uses different region names
-            )
+            self.s3_client.create_bucket(Bucket=self.bucket)
             logger.info(f"Created bucket: {self.bucket}")
         except self.s3_client.exceptions.BucketAlreadyExists:
             logger.info(f"Bucket {self.bucket} already exists")
@@ -92,7 +148,10 @@ class S3Storage:
             logger.info("Successfully connected to bucket")
         except Exception as e:
             logger.error(f"Error accessing bucket {self.bucket}: {str(e)}")
-            raise ValueError(f"Cannot access bucket {self.bucket}. Please ensure it exists and credentials are correct. Error: {str(e)}")
+            raise ValueError(
+                f"Cannot access bucket {self.bucket}. "
+                f"Please ensure it exists and credentials are correct. Error: {str(e)}"
+            )
 
     def _get_base_path(self, knowledgebase_id: str, doc_type: DocumentType) -> str:
         """Get the base path for a specific knowledgebase and document type."""
@@ -100,13 +159,18 @@ class S3Storage:
             raise ValueError("knowledgebase_id cannot be empty")
         return f"{knowledgebase_id}/{doc_type.value}"
 
-    async def store_files(self, knowledgebase_id: str, files: List[UploadFile], metadata: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
+    async def store_files(
+        self,
+        knowledgebase_id: str,
+        files: List[UploadFile],
+        metadata: Optional[Dict[str, Any]] = None
+    ) -> Dict[str, Any]:
         """Store multiple files in the files directory."""
         if not files:
             raise ValueError("No files provided")
 
         base_path = self._get_base_path(knowledgebase_id, DocumentType.FILES)
-        
+
         # Get existing metadata if it exists
         existing_files = []
         existing_metadata = {}
@@ -126,20 +190,18 @@ class S3Storage:
 
             file_key = f"{base_path}/{file.filename}"
             try:
-                # IMPORTANT: Read content into memory *before* using it with boto3.
-                # This avoids threading issues with UploadFile.
+                # Read content into memory before using with boto3
                 contents = await file.read()
                 if not contents:  # Skip empty files
                     logger.warning(f"Empty file content for {file.filename}")
                     continue
 
-                # Use BytesIO to create a file-like object from the in-memory bytes
                 file_like_object = io.BytesIO(contents)
 
                 self.s3_client.put_object(
                     Bucket=self.bucket,
                     Key=file_key,
-                    Body=file_like_object,  # Pass the file-like object
+                    Body=file_like_object,
                     ContentType=file.content_type or "application/octet-stream"
                 )
                 stored_files.append({
@@ -152,7 +214,6 @@ class S3Storage:
                 logger.error(f"Error storing file {file.filename}: {str(e)}")
                 raise HTTPException(status_code=500, detail=f"Error storing file {file.filename}: {str(e)}")
             finally:
-                # Always close the file after processing
                 await file.close()
 
         # Combine existing and new files
@@ -177,13 +238,13 @@ class S3Storage:
             raise HTTPException(status_code=500, detail=f"Error storing metadata: {str(e)}")
 
         return metadata_content
-    
+
     async def cleanup_old_files(self, knowledgebase_id: str, doc_type: DocumentType) -> None:
         """Clean up old timestamped files for a given document type."""
         try:
             base_path = self._get_base_path(knowledgebase_id, doc_type)
             paginator = self.s3_client.get_paginator('list_objects_v2')
-            
+
             # Define cleanup rules based on document type
             cleanup_rules = {
                 DocumentType.TEXT: {
@@ -197,22 +258,24 @@ class S3Storage:
                     'keep': ['content.json', 'metadata.json']
                 }
             }
-            
+
             if doc_type not in cleanup_rules:
                 return  # Skip if document type doesn't need cleanup
-                
+
             rule = cleanup_rules[doc_type]
-            
+
             for page in paginator.paginate(Bucket=self.bucket, Prefix=base_path):
                 if 'Contents' in page:
                     for obj in page['Contents']:
                         key = obj['Key']
                         filename = key.split('/')[-1]
-                        
+
                         # Delete if file matches cleanup criteria
-                        if (key.endswith(rule['extension']) and 
-                            rule['prefix'] in key and 
-                            filename not in rule['keep']):
+                        if (
+                            key.endswith(rule['extension'])
+                            and rule['prefix'] in key
+                            and filename not in rule['keep']
+                        ):
                             try:
                                 self.s3_client.delete_object(Bucket=self.bucket, Key=key)
                                 logger.info(f"Deleted old {doc_type} file: {key}")
@@ -222,7 +285,12 @@ class S3Storage:
             logger.error(f"Error during {doc_type} cleanup: {str(e)}")
             raise HTTPException(status_code=500, detail=f"Error during {doc_type} cleanup: {str(e)}")
 
-    async def store_text(self, knowledgebase_id: str, text: str, metadata: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
+    async def store_text(
+        self,
+        knowledgebase_id: str,
+        text: str,
+        metadata: Optional[Dict[str, Any]] = None
+    ) -> Dict[str, Any]:
         """Store text content."""
         if not text:
             raise ValueError("Text content cannot be empty")
@@ -236,8 +304,8 @@ class S3Storage:
             self.s3_client.put_object(
                 Bucket=self.bucket,
                 Key=content_key,
-                Body=text.encode('utf-8'),  # Encode the text
-                ContentType='text/plain; charset=utf-8' # Specify charset
+                Body=text.encode('utf-8'),
+                ContentType='text/plain; charset=utf-8'
             )
 
             # Update metadata with explicit content type
@@ -261,13 +329,17 @@ class S3Storage:
             logger.error(f"Error storing text content: {str(e)}")
             raise HTTPException(status_code=500, detail=f"Error storing text content: {str(e)}")
 
-    async def store_qa(self, knowledgebase_id: str, qa_pairs: List[Dict[str, str]], metadata: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
+    async def store_qa(
+        self,
+        knowledgebase_id: str,
+        qa_pairs: List[Dict[str, str]],
+        metadata: Optional[Dict[str, Any]] = None
+    ) -> Dict[str, Any]:
         """Store Q&A pairs in a single content.json file."""
         doc_type = DocumentType.QA
         prefix = self._get_base_path(knowledgebase_id, doc_type)
 
         try:
-            # Store the Q&A content exactly as received
             qa_content = {
                 "qa_pairs": qa_pairs,
                 "timestamp": datetime.utcnow().isoformat()
@@ -279,7 +351,6 @@ class S3Storage:
                 ContentType='application/json'
             )
 
-            # Update metadata to point to the content file
             metadata_content = {
                 "content_file": f"{prefix}/content.json",
                 "custom_metadata": metadata or {},
@@ -297,13 +368,18 @@ class S3Storage:
             logger.error(f"Error storing Q&A pairs: {str(e)}")
             raise HTTPException(status_code=500, detail=f"Error storing Q&A pairs: {str(e)}")
 
-    async def store_crawled(self, knowledgebase_id: str, files: List[Dict[str, Any]], metadata: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
+    async def store_crawled(
+        self,
+        knowledgebase_id: str,
+        files: List[Dict[str, Any]],
+        metadata: Optional[Dict[str, Any]] = None
+    ) -> Dict[str, Any]:
         """Store crawled files."""
         if not files:
             raise ValueError("No crawled files provided")
 
         base_path = self._get_base_path(knowledgebase_id, DocumentType.CRAWLED)
-        
+
         # Get existing metadata if it exists
         existing_files = []
         existing_metadata = {}
@@ -322,7 +398,10 @@ class S3Storage:
                 logger.warning(f"Skipping empty content for URL: {file.get('url')}")
                 continue
 
-            filename = file.get("filename", f"crawled_{datetime.utcnow().strftime('%Y%m%d_%H%M%S')}.html")
+            filename = file.get(
+                "filename",
+                f"crawled_{datetime.utcnow().strftime('%Y%m%d_%H%M%S')}.html"
+            )
             content = file.get("content", "").encode('utf-8')
             file_key = f"{base_path}/{filename}"
 
@@ -347,10 +426,8 @@ class S3Storage:
             raise HTTPException(status_code=400, detail="No valid files were stored")
 
         try:
-            # Combine existing and new files
             all_files = existing_files + stored_files
-            
-            # Store metadata
+
             metadata_content = {
                 "files": all_files,
                 "custom_metadata": {**(existing_metadata or {}), **(metadata or {})},
@@ -367,7 +444,12 @@ class S3Storage:
         except Exception as e:
             logger.error(f"Error storing crawled files metadata: {str(e)}")
             raise HTTPException(status_code=500, detail=f"Error storing crawled files metadata: {str(e)}")
-    async def get_documents(self, knowledgebase_id: str, doc_type: DocumentType) -> Optional[Dict[str, Any]]:
+
+    async def get_documents(
+        self,
+        knowledgebase_id: str,
+        doc_type: DocumentType
+    ) -> Optional[Dict[str, Any]]:
         """Retrieve documents of a specific type for a knowledgebase."""
         if not knowledgebase_id:
             raise ValueError("knowledgebase_id cannot be empty")
@@ -392,12 +474,11 @@ class S3Storage:
                             Key=content_key
                         )
                         content = content_response['Body'].read()
-                        
-                        # For QA, we need to parse the JSON content
+
                         if doc_type == DocumentType.QA:
                             qa_content = json.loads(content)
                             metadata['content'] = qa_content
-                        else:  # For text, just decode the content
+                        else:
                             metadata['content'] = content.decode('utf-8')
                     except Exception as e:
                         logger.error(f"Error fetching content for {content_key}: {str(e)}")
@@ -417,12 +498,11 @@ class S3Storage:
                 Bucket=self.bucket,
                 Delimiter='/'
             )
-            # Check if 'CommonPrefixes' exists and handle the case where it might be None
             common_prefixes = response.get('CommonPrefixes')
             if common_prefixes is not None:
                 return [prefix['Prefix'].rstrip('/') for prefix in common_prefixes]
             else:
-                return []  # Return an empty list if no knowledgebases are found
+                return []
         except Exception as e:
             logger.error(f"Error listing knowledgebases: {str(e)}")
             raise HTTPException(status_code=500, detail=f"Error listing knowledgebases: {str(e)}")
