@@ -43,7 +43,7 @@ services:
       - MONGO_URI=mongodb://admin:password123@mongodb:27017/intervo?authSource=admin
       - GOOGLE_CLIENT_ID=dummy-google-client-id
       - GOOGLE_CLIENT_SECRET=dummy-google-client-secret
-      - GOOGLE_CALLBACK_URL=http://localhost:3001/auth/google/callback
+      - GOOGLE_CALLBACK_URL=http://aitools-aihr-smlqtf-421ccf-10-10-0-46.traefik.me:3001/auth/google/callback
     command: sh -c "npm install --legacy-peer-deps && npm run dev"
     networks:
       - intervo-network
