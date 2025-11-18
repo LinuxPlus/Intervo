@@ -4,6 +4,10 @@ require('dotenv').config();
 const MAILCOACH_TOKEN = process.env.MAILCOACH_TOKEN;
 const MAILCOACH_TENANT_URL = process.env.MAILCOACH_TENANT_URL;
 
+// آیا سرویس ایمیل به‌طور کامل تنظیم شده؟
+const isEmailServiceConfigured = Boolean(MAILCOACH_TOKEN && MAILCOACH_TENANT_URL);
+const isProduction = process.env.NODE_ENV === 'production';
+
 /**
  * Sends a transactional email using Mailcoach.
  *
@@ -23,28 +27,47 @@ const MAILCOACH_TENANT_URL = process.env.MAILCOACH_TENANT_URL;
  * @returns {Promise<object>} - The response from the Mailcoach API.
  */
 async function sendTransactionalEmail(emailData) {
-  const url = `${MAILCOACH_TENANT_URL}/api/transactional-mails/send`;
+  // --- حالت DEV یا وقتی Mailcoach کانفیگ نشده: فقط لاگ کن، خطا نده ---
+  if (!isEmailServiceConfigured || (!isProduction && !emailData.fake)) {
+    console.warn('[emailService] Mailcoach is not fully configured OR not in production.');
+    console.warn('[emailService] Skipping real email send. Payload:');
+    console.log(JSON.stringify(emailData, null, 2));
 
-  const response = await fetch(url, {
-    method: "POST",
-    headers: {
-      "Content-Type": "application/json",
-      Authorization: `Bearer ${MAILCOACH_TOKEN}`,
-      Accept: "application/json"
-    },
-    body: JSON.stringify(emailData)
-  });
-
-  if (!response.ok) {
-    const errorDetail = await response.text();
-    throw new Error(
-      `Failed to send email: ${response.statusText} - ${errorDetail}`
-    );
+    // اینجا می‌تونیم لینک جادویی و بقیه اطلاعات رو از لاگ برداریم
+    return {
+      success: true,
+      skipped: true,
+      message: 'Email sending skipped (dev mode or Mailcoach not configured)',
+    };
   }
 
-  console.log('Email sent successfully');
+  const baseUrl = MAILCOACH_TENANT_URL.replace(/\/$/, '');
+  const url = `${baseUrl}/api/transactional-mails/send`;
 
-  return response.text();
+  try {
+    const response = await fetch(url, {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+        Authorization: `Bearer ${MAILCOACH_TOKEN}`,
+        Accept: "application/json"
+      },
+      body: JSON.stringify(emailData)
+    });
+
+    if (!response.ok) {
+      const errorDetail = await response.text();
+      throw new Error(
+        `Failed to send email: ${response.status} ${response.statusText} - ${errorDetail}`
+      );
+    }
+
+    console.log('Email sent successfully');
+    return response.text();
+  } catch (err) {
+    console.error('[emailService] Error while calling Mailcoach:', err);
+    throw err;
+  }
 }
 
 /**
@@ -70,7 +93,7 @@ async function sendMagicLinkEmail(email, magicLink, firstName = '', type = 'logi
     : 'to complete your registration';
 
   try {
-    return await sendTransactionalEmail({
+    const res = await sendTransactionalEmail({
       mail_name: 'Intervo Verification Email',
       subject: subject,
       from: 'noreply@intervo.ai',
@@ -79,11 +102,12 @@ async function sendMagicLinkEmail(email, magicLink, firstName = '', type = 'logi
         welcomeText: welcomeText,
         actionText: actionText,
         magicLink: magicLink,
-        // Add any other template variables here
         userName: firstName || email.split('@')[0],
         expiryTime: '30 minutes'
       }
     });
+
+    return res;
   } catch (error) {
     console.error('Error sending magic link email:', error);
     throw error;
@@ -126,9 +150,6 @@ async function sendWorkspaceInvitationEmail(
     });
   } catch (error) {
     console.error('Error sending workspace invitation email:', error);
-    // Decide if we should re-throw or just log. Logging for now.
-    // Re-throwing would stop the invite process if email fails.
-    // throw error; 
     return null; // Indicate email sending failed but don't block
   }
 }
@@ -169,5 +190,5 @@ module.exports = {
   sendTransactionalEmail,
   sendMagicLinkEmail,
   sendWorkspaceInvitationEmail,
-  sendWorkspaceRevocationEmail // Export the new function
-}; 
+  sendWorkspaceRevocationEmail
+};
