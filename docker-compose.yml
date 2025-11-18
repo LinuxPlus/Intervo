@@ -51,6 +51,23 @@ services:
       - mongodb
     restart: unless-stopped
 
+  # MinIO (S3-compatible storage for RAG)
+  minio:
+    image: minio/minio:latest
+    container_name: intervo-minio
+    ports:
+      - "9000:9000"   # S3 API
+      - "9001:9001"   # MinIO Console
+    environment:
+      - MINIO_ROOT_USER=intervoadmin
+      - MINIO_ROOT_PASSWORD=intervoadmin123
+    command: server /data --console-address ":9001"
+    volumes:
+      - minio_data:/data
+    networks:
+      - intervo-network
+    restart: unless-stopped
+
   # RAG API (Basic version)
   rag-api:
     image: python:3.11-slim
@@ -63,9 +80,20 @@ services:
     environment:
       - PYTHONPATH=/app/packages/intervo-backend
       - ENVIRONMENT=development
+
+      # S3-compatible storage (MinIO)
+      - S3_REGION=us-east-1
+      - S3_BUCKET_NAME=intervo-rag
+      - S3_ACCESS_KEY=intervoadmin
+      - S3_SECRET_KEY=intervoadmin123
+      - S3_ENDPOINT_URL=http://minio:9000
+      - S3_USE_SSL=false
     command: sh -c "pip install --no-cache-dir -r ../requirements.txt && python api.py"
     networks:
       - intervo-network
+    depends_on:
+      - backend
+      - minio
     restart: unless-stopped
 
 networks:
@@ -77,3 +105,4 @@ volumes:
   backend_node_modules:
   rag_api_cache:
   mongodb_data:
+  minio_data:
