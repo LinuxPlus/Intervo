@@ -12,6 +12,24 @@ const PendingVerification = require('../models/PendingVerification');
 const crypto = require('crypto');
 const { createWorkspace } = require('../lib/workspaceService');
 
+const isProduction = process.env.NODE_ENV === 'production';
+
+function getCookieOptions(maxAgeMs) {
+  const options = {
+    httpOnly: true,
+    secure: isProduction,                         // روی dev: false، روی prod: true
+    sameSite: isProduction ? 'None' : 'Lax',      // برای prod: کراس‌سایت، برای dev: راحت‌تر
+    maxAge: maxAgeMs,
+    path: '/',
+  };
+
+  // فقط روی پروداکشن domain ست کن
+  if (isProduction && process.env.COOKIE_DOMAIN) {
+    options.domain = process.env.COOKIE_DOMAIN;
+  }
+
+  return options;
+}
 
 // Google authentication route
 router.get(
@@ -76,7 +94,7 @@ router.get(
           await user.save();
       }
 
-      // Generate tokens and set cookies (rest of your existing code)
+      // Generate tokens and set cookies
       const accessToken = jwt.sign(
         { 
           userId: user._id, 
@@ -113,24 +131,9 @@ router.get(
         sameSite: 'None'
       });
 
-      // Set both cookies
-      res.cookie('authToken', accessToken, {
-        httpOnly: true,
-        secure: true,
-        sameSite: "None",
-        maxAge: 360000000, // 100 hours
-        path: "/",
-        domain: process.env.COOKIE_DOMAIN
-      });
-
-      res.cookie('refreshToken', refreshToken, {
-        httpOnly: true,
-        secure: true,
-        sameSite: "None",
-        maxAge: 7 * 24 * 3600000, // 7 days
-        path: "/",
-        domain: process.env.COOKIE_DOMAIN
-      });
+      // Set both cookies (با هلسپر جدید)
+      res.cookie('authToken', accessToken, getCookieOptions(360000000)); // 100 hours
+      res.cookie('refreshToken', refreshToken, getCookieOptions(7 * 24 * 3600000)); // 7 days
 
       // Redirect to frontend
       const redirectUrl = process.env.FRONTEND_URL;
@@ -250,15 +253,8 @@ router.post('/refresh-token', async (req, res) => {
       { expiresIn: '74h' }
     );
 
-    // Set new access token cookie
-    res.cookie('authToken', newAccessToken, {
-      httpOnly: true,
-      secure: true,
-      sameSite: "None",
-      maxAge: 360000000,//100 hours
-      path: "/",
-      domain: process.env.COOKIE_DOMAIN
-    });
+    // Set new access token cookie (با هلسپر)
+    res.cookie('authToken', newAccessToken, getCookieOptions(360000000)); // 100 hours
 
     res.json({ success: true });
   } catch (error) {
@@ -520,24 +516,9 @@ router.post('/verify-magic-link', async (req, res) => {
     // Save user (for auth methods and workspace info)
     await user.save();
     
-    // Set cookies
-    res.cookie('authToken', accessToken, {
-      httpOnly: true,
-      secure: true,
-      sameSite: "None",
-      maxAge: 360000000, // 100 hours
-      path: "/",
-      domain: process.env.COOKIE_DOMAIN
-    });
-    
-    res.cookie('refreshToken', refreshToken, {
-      httpOnly: true,
-      secure: true,
-      sameSite: "None",
-      maxAge: 7 * 24 * 3600000, // 7 days
-      path: "/",
-      domain: process.env.COOKIE_DOMAIN
-    });
+    // Set cookies (با هلسپر جدید)
+    res.cookie('authToken', accessToken, getCookieOptions(360000000));        // 100 hours
+    res.cookie('refreshToken', refreshToken, getCookieOptions(7 * 24 * 3600000)); // 7 days
     
     // Return user data
     return res.status(200).json({
