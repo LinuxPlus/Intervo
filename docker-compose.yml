@@ -60,7 +60,7 @@ services:
     environment:
       - PYTHONPATH=/app/packages/intervo-backend
       - ENVIRONMENT=development
-    command: sh -c "pip install --no-cache-dir -r requirements.txt && python api.py"
+    command: sh -c "pip install --no-cache-dir -r ../requirements.txt && python api.py"
     networks:
       - intervo-network
     restart: unless-stopped
