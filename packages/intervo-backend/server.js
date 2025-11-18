@@ -7,7 +7,7 @@ const envFile = process.env.NODE_ENV === 'production'
   ? '.env.production'
   : process.env.NODE_ENV === 'staging'
     ? '.env.staging'
-    : '.env.development';
+    : '.env';
 
 console.log('Loading environment file:', envFile);
 console.log('NODE_ENV:', process.env.NODE_ENV);
